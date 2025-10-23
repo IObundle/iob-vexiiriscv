@@ -71,6 +71,11 @@ object VexiiRiscvAxi4LinuxPlicClint extends App {
     ParamSimple.addOptionRegion(this, regions)
   }.parse(args, ()).nonEmpty)
 
+  // Instruction set rv32imac
+  param.withRvm()
+  param.withRva = true
+  param.withRvc = true
+  param.withAlignerBuffer = true
   // Enable L1 caches on ibus and dbus
   param.withCaches()
   // Use AXI4 ibus (fetch) and dbus (lsu)

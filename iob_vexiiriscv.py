@@ -8,9 +8,9 @@ import shutil
 
 def setup(py_params_dict):
     # Each generated cpu verilog module must have a unique name due to different python parameters (can't have two differnet verilog modules with same name).
-    assert "name" in py_params_dict, print(
-        "Error: Missing name for generated vexiiriscv module."
-    )
+    assert (
+        "name" in py_params_dict
+    ), "Error: Missing name for generated vexiiriscv module."
 
     params = {
         "reset_addr": 0x00000000,
@@ -316,6 +316,7 @@ def setup(py_params_dict):
 
       // Configuration ports
       .externalResetVector(32'h{params["reset_addr"]:x}),
+      // TODO: Include these ports in the vexiiriscv core
       //.ioStartAddr(32'h{params["uncached_start_addr"]:x}),
       //.ioSize(32'h{params["uncached_size"]:x}),
 """
@@ -490,10 +491,9 @@ def setup(py_params_dict):
         ],
     }
 
-    return attributes_dict
-
     if py_params_dict.get("py2hwsw_target", "") == "setup":
         build_dir = py_params_dict.get("build_dir")
+        assert build_dir, "build_dir is not set"
         # Disable linter for `VexiiRiscvAxi4LinuxPlicClint.v` source.
         os.makedirs(f"{build_dir}/hardware/lint/verilator", exist_ok=True)
         with open(f"{build_dir}/hardware/lint/verilator_config.vlt", "a") as file:
@@ -503,6 +503,8 @@ def setup(py_params_dict):
 lint_off -file "**/VexiiRiscvAxi4LinuxPlicClint.v"
 """
             )
+
+    return attributes_dict
 
 
 # TODO:

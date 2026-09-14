@@ -2,55 +2,116 @@
 #
 # SPDX-License-Identifier: MIT
 
-#PATHS
-VEXIIRISCV_DIR ?= $(shell pwd)
-VEXII_HARDWARE_DIR:=$(VEXIIRISCV_DIR)/hardware
-VEXIIRISCV_SRC_DIR:=$(VEXII_HARDWARE_DIR)/src
-VEXII_SUBMODULES_DIR:=$(VEXIIRISCV_DIR)/submodules
-
-CPU ?= VexiiRiscvAxi4LinuxPlicClint
 JDK_HOME := $(shell dirname $$(dirname $$(which java)))
 
-# Configure VexiiRiscv CPU:
-# - Use AXI4 ibus (fetch) and dbus (lsu)
-#PARAMS ?= --fetch-axi4 --lsu-axi4
-
-# By default, vexiiriscv uses the following instruction set and extensions:
-# - xlen=32 (rv32)
-# - withRve=false (extension E = True; extension I = False)
-# - withMul=false (extension M)
-# - withRva=false (extension A)
-# - withRvf=false (extension F)
-# - withRvd=false (extension D)
-# - withRvc=false (extension C)
+# Linux-compatible VexiiRiscv configuration with AXI4 interfaces
+# - 32-bit RISC-V with supervisor mode (required for Linux)
+# - 3 AXI4 buses: iBus (fetch), dBus (LSU cached), ioBus (LSU uncached)
+# - Memory regions (compile-time configuration):
+#   - 0x00000000-0x7FFFFFFF: Cached (main)
+#   - 0x80000000-0xBFFFFFFF: Uncached (IO)
+#   - 0xC0000000-0xFFFFFFFF: Cached (main)
 #
-# Extensions S, U are disabled? and non-configurable via command line arguments (But can be enabled with --debug-privileged).
+# Usage:
+#   make                    - Build with L1 data cache (3 buses), no branch prediction
+#   make USE_CACHE=0        - Build without L1 data cache (2 buses)
+#   make BRANCH_PRED=1      - Enable BTB + GShare + RAS branch prediction
+#
+# Note: To change memory regions or reset vector, modify the PARAMS below
+# and rebuild. The IO region is hardcoded in hardware at generation time.
+
+# Set USE_CACHE=0 to generate without L1 data cache
+USE_CACHE ?= 1
+
+# Branch prediction (BTB, GShare, RAS).
+# BRANCH_PRED=0 disables it: the fetch pipeline then never speculates into
+# predicted targets. This is useful to debug hangs where a speculative fetch
+# requests an address that the system interconnect does not map (e.g. kernel
+# virtual addresses in 0xC0000000-0xFFFFFFFF before/around MMU enable), since
+# such requests are left unanswered by the xbar and stall the CPU silently.
+BRANCH_PRED ?= 1
+
+# Reset vector and region configuration
+# Note: Values should be hex without 0x prefix for VexiiRiscv
+RESET_VECTOR ?= 40000000
+IO_REGION_BASE ?= 80000000
+IO_REGION_SIZE ?= 40000000
+
+PARAMS ?= \
+        --xlen=32 \
+        --reset-vector=$(RESET_VECTOR) \
+        --region base=0,size=80000000,main=1,exe=1 \
+        --region base=$(IO_REGION_BASE),size=$(IO_REGION_SIZE),main=0,exe=1 \
+        --region base=c0000000,size=40000000,main=1,exe=1 \
+        --with-rvm \
+        --with-rva \
+        --with-rvc \
+        --with-rvZb \
+        --with-rvZcbm \
+        --with-supervisor \
+        --fetch-l1 \
+        --fetch-l1-ways 2 \
+        --fetch-axi4 \
+        --performance-counters 4
+#       --with-user is implied by --with-supervisor
+#       --with-mul is implied by --with-rvm
+
+# GShare and RAS require the BTB, so the three are enabled/disabled together.
+ifeq ($(BRANCH_PRED),1)
+	PARAMS += --with-btb --with-gshare --with-ras
+endif
+
+ifeq ($(USE_CACHE),1)
+	PARAMS += --lsu-l1 --lsu-l1-axi4 --lsu-axi4
+	SED_DBUS := LsuL1Axi4Plugin_logic_axi_
+	SED_IOBUS := LsuCachelessAxi4Plugin_logic_axi_
+else
+	PARAMS += --lsu-axi4
+	SED_DBUS := LsuCachelessAxi4Plugin_logic_axi_
+	SED_IOBUS :=
+	# VexiiRiscv cacheless AXI4 bridge does not support AMO/LR/SC,
+	# so the A extension (atomics) must be disabled without L1 cache.
+	PARAMS := $(filter-out --with-rva,$(PARAMS))
+endif
 
 # Primary targets
 vexiiriscv:
-	#mkdir -p $(VEXII_SUBMODULES_DIR)/VexiiRiscv/src/main/scala/vexiiriscv/platform
-	cp $(VEXII_HARDWARE_DIR)/vexiiriscv_core/VexiiRiscvAxi4LinuxPlicClint.scala $(VEXII_SUBMODULES_DIR)/VexiiRiscv/src/main/scala/vexiiriscv/
-	cp $(VEXII_HARDWARE_DIR)/vexiiriscv_core/PcPlugin.scala $(VEXII_SUBMODULES_DIR)/VexiiRiscv/src/main/scala/vexiiriscv/fetch/
-	#cp $(VEXII_HARDWARE_DIR)/vexiiriscv_core/MmuPlugin.scala $(VEXII_SUBMODULES_DIR)/VexiiRiscv/src/main/scala/vexiiriscv/misc/
-	#cp $(VEXII_HARDWARE_DIR)/vexiiriscv_core/LsuPlugin.scala $(VEXII_SUBMODULES_DIR)/VexiiRiscv/src/main/scala/vexiiriscv/lsu/
-	# (Re-)try to apply these patches: https://github.com/SpinalHDL/VexiiRiscv/issues/140#issuecomment-2725576402
-	#-make -C submodules/VexiiRiscv install-core
-	# Run sbt to build CPU and copy generated verilog to this repo
+	cp hardware/spinalhdl/PcPlugin.scala submodules/VexiiRiscv/src/main/scala/vexiiriscv/fetch/PcPlugin.scala
 	cd submodules/VexiiRiscv && \
-	sbt -java-home $(JDK_HOME) "runMain vexiiriscv.$(CPU) $(PARAMS)" && \
-	cp $(CPU).v $(VEXIIRISCV_SRC_DIR)/$(CPU).v
-	#cp $(CPU).v_*.bin $(VEXII_HARDWARE_DIR)/init_mems
+	nix-shell ../../spinalhdl_shell.nix --run 'sbt "runMain vexiiriscv.Generate $(PARAMS)"'
+	mkdir -p hardware/src
+	sed -e 's/FetchL1Axi4Plugin_logic_axi_/iBusAxi_/g' \
+	    -e 's/LsuL1Axi4Plugin_logic_axi_/dBusAxi_/g' \
+	    -e 's/LsuCachelessAxi4Plugin_logic_axi_/ioBusAxi_/g' \
+	    -e 's/_payload_//g' \
+	    -e 's/_valid/valid/g' \
+	    -e 's/_ready/ready/g' \
+	    submodules/VexiiRiscv/VexiiRiscv.v | \
+	python3 scripts/add_io_region_params.py --io-base=$(IO_REGION_BASE) --io-size=$(IO_REGION_SIZE) > hardware/src/VexiiRiscv.v
+	@echo "Generated VexiiRiscv with:"
+	@echo "  - Reset vector: 0x$(RESET_VECTOR)"
+	@echo "  - IO region: 0x$(IO_REGION_BASE) - 0x$$(printf '%x' $$((0x$(IO_REGION_BASE)+0x$(IO_REGION_SIZE))))"
+	@echo "  - USE_CACHE=$(USE_CACHE)"
+	@echo "  - Branch prediction: $(BRANCH_PRED)"
+
+# Update IO region in existing Verilog (without regenerating from SpinalHDL)
+# Usage: make update-io-region IO_REGION_BASE=80000000 IO_REGION_SIZE=40000000
+update-io-region:
+	python3 scripts/update_io_region.py \
+	    hardware/src/VexiiRiscv.v \
+	    --io-base=$(IO_REGION_BASE) \
+	    --io-size=$(IO_REGION_SIZE)
+	@echo "Updated IO region to:"
+	@echo "  - IO region: 0x$(IO_REGION_BASE) - 0x$$(printf '%x' $$((0x$(IO_REGION_BASE)+0x$(IO_REGION_SIZE))))"
 
 vexiiriscv-help:
 	cd submodules/VexiiRiscv && \
-	sbt -java-home $(JDK_HOME) "runMain vexiiriscv.Generate --help"
+	nix-shell ../../spinalhdl_shell.nix --run 'sbt -java-home $(JDK_HOME) "runMain vexiiriscv.Generate --help"'
 
-#
-# Clean
-#
 clean-vexiiriscv:
-	rm $(VEXIIRISCV_SRC_DIR)/$(CPU).v
+	rm -f hardware/src/VexiiRiscv.v
 
-clean-all: clean-vexiiriscv
+clean-submodules:
+	git submodule foreach --recursive git clean -ffdx
 
-.PHONY: vexiiriscv vexiiriscv-help clean-vexiiriscv clean-all
+.PHONY: vexiiriscv vexiiriscv-help clean-vexiiriscv clean-submodules

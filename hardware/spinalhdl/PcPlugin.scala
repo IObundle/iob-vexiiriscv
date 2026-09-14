@@ -31,8 +31,6 @@ class PcPlugin(var resetVector : BigInt = 0x80000000l) extends FiberPlugin with 
 
   override def forcedSpawn(): Bool = logic.forcedSpawn
 
-  var externalResetVector: UInt = null
-
   val logic = during setup new Area{
     val pp = host[FetchPipelinePlugin]
     val buildBefore = retains(pp.elaborationLock)
@@ -41,20 +39,20 @@ class PcPlugin(var resetVector : BigInt = 0x80000000l) extends FiberPlugin with 
     elaborationLock.await()
     val injectStage = pp.fetch(0).up
 
+    val resetVectorPort = in UInt (32 bits)
+    resetVectorPort.setName("resetVector")
+
     assert(Global.HART_COUNT.get == 1)
     val forcedSpawn = jumps.map(_.bus.valid).orR
 
-    // Create external reset vector input port
-    externalResetVector = in(UInt(32 bits).setName("externalResetVector"))
-
     val harts = for(hartId <- 0 until HART_COUNT) yield new Area{
-      // Self is a jump interface which store the hart PC
+      val resetValue = resetVectorPort
       val self = new Area {
         val id = Reg(Fetch.ID) init(0)
         val flow = newJumpInterface(-1, laneAgeWidth = 0, aggregationPriority = 0)
         val increment = RegInit(False)
         val fault = RegInit(False).simPublic()
-        val state = Reg(PC).init(externalResetVector).simPublic()
+        val state = Reg(PC).init(resetValue).simPublic()
         val pc = state + U(WORD_BYTES).andMask(increment)
         flow.valid := True
         flow.fault := fault

@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: MIT
 
 import os
-import shutil
 
+USE_CACHE = True
 
 def setup(py_params_dict):
     # Each generated cpu verilog module must have a unique name due to different python parameters (can't have two differnet verilog modules with same name).
-    assert (
-        "name" in py_params_dict
-    ), "Error: Missing name for generated vexiiriscv module."
+    assert "name" in py_params_dict, print(
+        "Error: Missing name for generated vexiiriscv module."
+    )
 
     params = {
         "reset_addr": 0x00000000,
@@ -23,11 +23,27 @@ def setup(py_params_dict):
         if param in params:
             params[param] = py_params_dict[param]
 
+    # For cached version:
+    #
+    # CPU ibus --------------------------> i_bus_m port
+    #
+    # CPU cached dbus ----+-> axi_merge -> d_bus_m port
+    #                     |
+    #                     |
+    # CPU uncached iobus -+
+
+    # For uncached version:
+    #
+    # CPU ibus -----> i_bus_m port
+    #
+    # CPU dbus -----> d_bus_m port
+
     attributes_dict = {
         "name": py_params_dict["name"],
-        "version": "0.1",
+        "version": "0.1.0",
         "generate_hw": True,
-        "confs": [
+    }
+    attributes_dict["confs"] = [
             {
                 "name": "AXI_ID_W",
                 "descr": "AXI ID bus width",
@@ -60,8 +76,8 @@ def setup(py_params_dict):
                 "min": 0,
                 "max": 4,
             },
-        ],
-        "ports": [
+    ]
+    attributes_dict["ports"] = [
             {
                 "name": "clk_en_rst_s",
                 "descr": "Clock, clock enable and reset",
@@ -80,7 +96,7 @@ def setup(py_params_dict):
             },
             {
                 "name": "i_bus_m",
-                "descr": "CPU instruction bus",
+                "descr": "iob-picorv32 instruction bus",
                 "signals": {
                     "type": "axi",
                     "prefix": "ibus_",
@@ -93,7 +109,7 @@ def setup(py_params_dict):
             },
             {
                 "name": "d_bus_m",
-                "descr": "CPU data bus",
+                "descr": "iob-picorv32 data bus",
                 "signals": {
                     "type": "axi",
                     "prefix": "dbus_",
@@ -105,337 +121,319 @@ def setup(py_params_dict):
                 },
             },
             {
-                "name": "clint_cbus_s",
-                "descr": "CLINT CSRs bus",
-                "signals": {
-                    "type": "iob",
-                    "prefix": "clint_",
-                    "ADDR_W": 16,
-                },
-            },
-            {
-                "name": "plic_cbus_s",
-                "descr": "PLIC CSRs bus",
-                "signals": {
-                    "type": "iob",
-                    "prefix": "plic_",
-                    "ADDR_W": 22,
-                },
-            },
-            {
-                "name": "plic_interrupts_i",
-                "descr": "PLIC interrupts",
+                "name": "interrupt_i",
+                "descr": "Standard RISC‑V interrupt pending bits",
                 "signals": [
-                    {
-                        "name": "plic_interrupts_i",
-                        "descr": "PLIC interrupts",
-                        "width": "32",
+                    {"name": "msip_i", "descr": "Machine software interrupt.", "width": "1"},
+                    {"name": "mtip_i", "descr": "Machine timer interrupt.", "width": "1"},
+                    {"name": "meip_i", "descr": "Machine external interrupt.", "width": "1"},
+                    {"name": "seip_i", "descr": "Supervisor external interrupt.", "width": "1"},
+                ],
+            },
+            {
+                "name": "timebase_i",
+                "descr": "Timebase interface",
+                "signals": [
+                    {"name": "mtime_i", "descr": "Input from external 64-bit counter for time CSRs", "width": "64"},
+                ],
+            },
+    ]
+    attributes_dict["wires"] = [
+        {
+            "name": "cpu_reset",
+            "descr": "cpu reset signal",
+            "signals": [
+                {"name": "cpu_reset", "width": "1"},
+            ],
+        },
+    ]
+    if USE_CACHE:
+        attributes_dict["wires"] = [
+                # Internal buses
+                {
+                    "name": "cached_d_bus",
+                    "signals": {
+                        "type": "axi",
+                        "prefix": "cached_dbus_",
+                        "ID_W": "AXI_ID_W",
+                        "ADDR_W": "AXI_ADDR_W",
+                        "DATA_W": "AXI_DATA_W",
+                        "LEN_W": "AXI_LEN_W",
+                        "LOCK_W": 1,
                     },
-                ],
-            },
-        ],
-        "wires": [
-            {
-                "name": "cpu_reset",
-                "descr": "cpu reset signal",
-                "signals": [
-                    {"name": "cpu_reset", "width": "1"},
-                ],
-            },
-            {
-                "name": "clint_cbus_axil",
-                "descr": "CLINT CSRs bus",
-                "signals": {
-                    "type": "axil",
-                    "prefix": "clint_",
-                    "ADDR_W": 16,
-                    "DATA_W": "AXI_DATA_W",
                 },
-            },
-            {
-                "name": "plic_cbus_axil",
-                "descr": "PLIC CSRs bus",
-                "signals": {
-                    "type": "axil",
-                    "prefix": "plic_",
-                    "ADDR_W": 22,
-                    "DATA_W": "AXI_DATA_W",
+                {
+                    "name": "uncached_io_bus",
+                    "signals": {
+                        "type": "axi",
+                        "prefix": "iobus_",
+                        "ID_W": "AXI_ID_W",
+                        "ADDR_W": "AXI_ADDR_W",
+                        "DATA_W": "AXI_DATA_W",
+                        "LEN_W": "AXI_LEN_W",
+                        "LOCK_W": 1,
+                    },
                 },
-            },
-            {
-                "name": "cached_dbus",
-                "descr": "Internal cached data bus",
-                "signals": {
-                    "type": "axi",
-                    "prefix": "cached_dbus_",
-                    "ID_W": "AXI_ID_W",
-                    "ADDR_W": "AXI_ADDR_W",
-                    "DATA_W": "AXI_DATA_W",
-                    "LEN_W": "AXI_LEN_W",
-                    "LOCK_W": 1,
+                {
+                    "name": "internal_wires",
+                    "signals": [
+                        {"name": "dbus_araddr_ignore_bits", "width": 1},
+                        {"name": "dbus_awaddr_ignore_bits", "width": 1},
+                    ],
                 },
-            },
-            {
-                "name": "uncached_dbus",
-                "descr": "Internal uncached data bus",
-                "signals": {
-                    "type": "axi",
-                    "prefix": "uncached_dbus_",
-                    "ID_W": "AXI_ID_W",
-                    "ADDR_W": "AXI_ADDR_W",
-                    "DATA_W": "AXI_DATA_W",
-                    "LEN_W": "AXI_LEN_W",
-                    "LOCK_W": 1,
+        ]
+    if USE_CACHE:
+        attributes_dict["subblocks"] = [
+                {
+                    "core_name": "iob_axi_merge",
+                    "name": "iob_vexiiriscv_axi_merge",
+                    "instance_name": "axi_merge",
+                    "instance_description": "Merge",
+                    "addr_w": 33,  # Each subordinate has -1 address bit (32 bits each). Manager has 33 bits (1 ignored).
+                    "lock_w": 1,
+                    "parameters": {
+                        "ID_W": "AXI_ID_W",
+                        "LEN_W": "AXI_LEN_W",
+                    },
+                    "num_subordinates": 2,
+                    "connect": {
+                        "clk_en_rst_s": "clk_en_rst_s",
+                        "reset_i": "rst_i",
+                        "s_0_s": "cached_d_bus",
+                        "s_1_s": "uncached_io_bus",
+                        "m_m": (
+                            "d_bus_m",
+                            [
+                                # Ignore most significant address bits (we only use 32 bits)
+                                "{dbus_araddr_ignore_bits, dbus_axi_araddr_o}",
+                                "{dbus_awaddr_ignore_bits, dbus_axi_awaddr_o}",
+                            ],
+                        ),
+                    },
                 },
-            },
-            {
-                "name": "unused_signals",
-                "signals": [
-                    {"name": "dbus_araddr_ignore_bit", "width": "1"},
-                    {"name": "dbus_awaddr_ignore_bit", "width": "1"},
-                    {"name": "unused_rdtime", "width": "64"},
-                    {"name": "unused_harts_0_int_m_timer", "width": "1"},
-                    {"name": "unused_harts_0_int_m_software", "width": "1"},
-                    {"name": "unused_harts_0_int_m_external", "width": "1"},
-                    {"name": "unused_harts_0_int_s_external", "width": "1"},
-                ],
-            },
-        ],
-        "subblocks": [
-            {
-                "core_name": "iob_iob2axil",
-                "instance_name": "clint_iob2axil",
-                "instance_description": "Convert IOb to AXI lite for CLINT",
-                "parameters": {
-                    "AXIL_ADDR_W": 16,
-                    "AXIL_DATA_W": "AXI_DATA_W",
-                    "ADDR_W": 16,
-                    "DATA_W": "AXI_DATA_W",
-                },
-                "connect": {
-                    "iob_s": "clint_cbus_s",
-                    "axil_m": "clint_cbus_axil",
-                },
-            },
-            {
-                "core_name": "iob_iob2axil",
-                "instance_name": "plic_iob2axil",
-                "instance_description": "Convert IOb to AXI lite for PLIC",
-                "parameters": {
-                    "AXIL_ADDR_W": 22,
-                    "AXIL_DATA_W": "AXI_DATA_W",
-                    "ADDR_W": 22,
-                    "DATA_W": "AXI_DATA_W",
-                },
-                "connect": {
-                    "iob_s": "plic_cbus_s",
-                    "axil_m": "plic_cbus_axil",
-                },
-            },
-            {
-                "core_name": "iob_axi_merge",
-                "name": "iob_vexiiriscv_dbus_axi_merge",
-                "instance_name": "dbus_axi_merge",
-                "instance_description": "Merge internal data and peripheral buses into a single data bus",
-                "addr_w": 33,  # Each subordinate has -1 address bit (32 bits each). Manager has 33 bits (1 ignored).
-                "lock_w": 1,
-                "parameters": {
-                    "ID_W": "AXI_ID_W",
-                    "LEN_W": "AXI_LEN_W",
-                },
-                "num_subordinates": 2,
-                "connect": {
-                    "clk_en_rst_s": "clk_en_rst_s",
-                    "reset_i": "rst_i",
-                    "s_0_s": "cached_dbus",
-                    "s_1_s": "uncached_dbus",
-                    "m_m": (
-                        "d_bus_m",
-                        [
-                            # Ignore most significant address bit (we only use 32 bits)
-                            "{dbus_araddr_ignore_bit, dbus_axi_araddr_o}",
-                            "{dbus_awaddr_ignore_bit, dbus_axi_awaddr_o}",
-                        ],
-                    ),
-                },
-            },
-        ],
-        "snippets": [
-            {
-                "verilog_code": """
-   wire [7:0] dbus_axi_arlen_int;
-   wire [7:0] dbus_axi_awlen_int;
+        ]
+    if USE_CACHE:
+        snippet = """
+    wire [7:0] ibus_axi_arlen_int;
+    wire [7:0] cached_dbus_axi_arlen_int;
+    wire [7:0] cached_dbus_axi_awlen_int;
 
 
-   // Instantiation of VexiiRiscv, Plic, and Clint
-   VexiiRiscvAxi4LinuxPlicClint CPU (
-      // CLINT
-      .clint_awvalid(clint_axil_awvalid),
-      .clint_awready(clint_axil_awready),
-      .clint_awaddr(clint_axil_awaddr),
-      .clint_awprot(3'd0),
-      .clint_wvalid(clint_axil_wvalid),
-      .clint_wready(clint_axil_wready),
-      .clint_wdata(clint_axil_wdata),
-      .clint_wstrb(clint_axil_wstrb),
-      .clint_bvalid(clint_axil_bvalid),
-      .clint_bready(clint_axil_bready),
-      .clint_bresp(clint_axil_bresp),
-      .clint_arvalid(clint_axil_arvalid),
-      .clint_arready(clint_axil_arready),
-      .clint_araddr(clint_axil_araddr),
-      .clint_arprot(3'd0),
-      .clint_rvalid(clint_axil_rvalid),
-      .clint_rready(clint_axil_rready),
-      .clint_rdata(clint_axil_rdata),
-      .clint_rresp(clint_axil_rresp),
-
-      // PLIC
-      .plic_awvalid(plic_axil_awvalid),
-      .plic_awready(plic_axil_awready),
-      .plic_awaddr(plic_axil_awaddr),
-      .plic_awprot(3'd0),
-      .plic_wvalid(plic_axil_wvalid),
-      .plic_wready(plic_axil_wready),
-      .plic_wdata(plic_axil_wdata),
-      .plic_wstrb(plic_axil_wstrb),
-      .plic_bvalid(plic_axil_bvalid),
-      .plic_bready(plic_axil_bready),
-      .plic_bresp(plic_axil_bresp),
-      .plic_arvalid(plic_axil_arvalid),
-      .plic_arready(plic_axil_arready),
-      .plic_araddr(plic_axil_araddr),
-      .plic_arprot(3'd0),
-      .plic_rvalid(plic_axil_rvalid),
-      .plic_rready(plic_axil_rready),
-      .plic_rdata(plic_axil_rdata),
-      .plic_rresp(plic_axil_rresp),
-      .plicInterrupts(plic_interrupts_i),
-"""
-                + f"""
-
-      // Configuration ports
-      .externalResetVector(32'h{params["reset_addr"]:x}),
-      // TODO: Include these ports in the vexiiriscv core
-      //.ioStartAddr(32'h{params["uncached_start_addr"]:x}),
-      //.ioSize(32'h{params["uncached_size"]:x}),
-"""
-                + """
-
+  // Instantiation of VexiiRiscv core
+  VexiiRiscv #(
+""" + f"""\
+      .IO_REGION_BASE (32'h{params["uncached_start_addr"]:x}),
+      .IO_REGION_SIZE (32'h{params["uncached_size"]:x})
+""" + """\
+  ) CPU (
+      // Interrupt sources
+      .PrivilegedPlugin_logic_harts_0_int_m_timer(mtip_i),
+      .PrivilegedPlugin_logic_harts_0_int_m_software(msip_i),
+      .PrivilegedPlugin_logic_harts_0_int_m_external(meip_i),
+      .PrivilegedPlugin_logic_harts_0_int_s_external(seip_i),
+      // Timbase input
+      .PrivilegedPlugin_logic_rdtime(mtime_i),
+""" + f"""\
+      // CPU reset address
+      .resetVector(32'h{params["reset_addr"]:x}),
+""" + """\
       // Instruction Bus
-      .FetchL1Axi4Plugin_logic_axi_ar_valid(ibus_axi_arvalid_o),
-      .FetchL1Axi4Plugin_logic_axi_ar_ready(ibus_axi_arready_i),
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_addr(ibus_axi_araddr_o),
-      //.FetchL1Axi4Plugin_logic_axi_ar_payload_id(ibus_axi_arid_o), // Not available
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_len(ibus_axi_arlen_o),
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_size(ibus_axi_arsize_o),
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_burst(ibus_axi_arburst_o),
-      //.FetchL1Axi4Plugin_logic_axi_ar_payload_lock(ibus_axi_arlock_o), // Not available
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_cache(ibus_axi_arcache_o),
-      //.FetchL1Axi4Plugin_logic_axi_ar_payload_qos(ibus_axi_arqos_o), // Not available
-      .FetchL1Axi4Plugin_logic_axi_ar_payload_prot(),
-      .FetchL1Axi4Plugin_logic_axi_r_valid(ibus_axi_rvalid_i),
-      .FetchL1Axi4Plugin_logic_axi_r_ready(ibus_axi_rready_o),
-      .FetchL1Axi4Plugin_logic_axi_r_payload_data(ibus_axi_rdata_i),
-      //.FetchL1Axi4Plugin_logic_axi_r_payload_id(ibus_axi_rid_i), // Not available
-      .FetchL1Axi4Plugin_logic_axi_r_payload_resp(ibus_axi_rresp_i),
-      .FetchL1Axi4Plugin_logic_axi_r_payload_last(ibus_axi_rlast_i),
-
-      // (cached) Data Bus
-      .LsuL1Axi4Plugin_logic_axi_aw_valid(cached_dbus_axi_awvalid),
-      .LsuL1Axi4Plugin_logic_axi_aw_ready(cached_dbus_axi_awready),
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_addr(cached_dbus_axi_awaddr),
-      //.LsuL1Axi4Plugin_logic_axi_aw_payload_id(cached_dbus_axi_awid), // Not available
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_len(cached_dbus_axi_awlen),
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_size(cached_dbus_axi_awsize),
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_burst(cached_dbus_axi_awburst),
-      //.LsuL1Axi4Plugin_logic_axi_aw_payload_lock(cached_dbus_axi_awlock), // Not available
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_cache(cached_dbus_axi_awcache),
-      //.LsuL1Axi4Plugin_logic_axi_aw_payload_qos(cached_dbus_axi_awqos), // Not available
-      .LsuL1Axi4Plugin_logic_axi_aw_payload_prot(),
-      .LsuL1Axi4Plugin_logic_axi_w_valid(cached_dbus_axi_wvalid),
-      .LsuL1Axi4Plugin_logic_axi_w_ready(cached_dbus_axi_wready),
-      .LsuL1Axi4Plugin_logic_axi_w_payload_data(cached_dbus_axi_wdata),
-      .LsuL1Axi4Plugin_logic_axi_w_payload_strb(cached_dbus_axi_wstrb),
-      .LsuL1Axi4Plugin_logic_axi_w_payload_last(cached_dbus_axi_wlast),
-      .LsuL1Axi4Plugin_logic_axi_b_valid(cached_dbus_axi_bvalid),
-      .LsuL1Axi4Plugin_logic_axi_b_ready(cached_dbus_axi_bready),
-      //.LsuL1Axi4Plugin_logic_axi_b_payload_id(cached_dbus_axi_bid), // Not available
-      .LsuL1Axi4Plugin_logic_axi_b_payload_resp(cached_dbus_axi_bresp),
-      .LsuL1Axi4Plugin_logic_axi_ar_valid(cached_dbus_axi_arvalid),
-      .LsuL1Axi4Plugin_logic_axi_ar_ready(cached_dbus_axi_arready),
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_addr(cached_dbus_axi_araddr),
-      //.LsuL1Axi4Plugin_logic_axi_ar_payload_id(cached_dbus_axi_arid), // Not available
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_len(cached_dbus_axi_arlen),
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_size(cached_dbus_axi_arsize),
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_burst(cached_dbus_axi_arburst),
-      //.LsuL1Axi4Plugin_logic_axi_ar_payload_lock(cached_dbus_axi_arlock), // Not available
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_cache(cached_dbus_axi_arcache),
-      //.LsuL1Axi4Plugin_logic_axi_ar_payload_qos(cached_dbus_axi_arqos), // Not available
-      .LsuL1Axi4Plugin_logic_axi_ar_payload_prot(),
-      .LsuL1Axi4Plugin_logic_axi_r_valid(cached_dbus_axi_rvalid),
-      .LsuL1Axi4Plugin_logic_axi_r_ready(cached_dbus_axi_rready),
-      .LsuL1Axi4Plugin_logic_axi_r_payload_data(cached_dbus_axi_rdata),
-      //.LsuL1Axi4Plugin_logic_axi_r_payload_id(cached_dbus_axi_rid), // Not available
-      .LsuL1Axi4Plugin_logic_axi_r_payload_resp(cached_dbus_axi_rresp),
-      .LsuL1Axi4Plugin_logic_axi_r_payload_last(cached_dbus_axi_rlast),
-
-      // (uncached) Peripheral Bus
-      .LsuCachelessAxi4Plugin_logic_axi_aw_valid(uncached_dbus_axi_awvalid),
-      .LsuCachelessAxi4Plugin_logic_axi_aw_ready(uncached_dbus_axi_awready),
-      .LsuCachelessAxi4Plugin_logic_axi_aw_payload_addr(uncached_dbus_axi_awaddr),
-      //.LsuCachelessAxi4Plugin_logic_axi_aw_payload_id(uncached_dbus_axi_awid), // Not available
-      //.LsuCachelessAxi4Plugin_logic_axi_aw_payload_len(uncached_dbus_axi_awlen), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_aw_payload_size(uncached_dbus_axi_awsize),
-      //.LsuCachelessAxi4Plugin_logic_axi_aw_payload_burst(uncached_dbus_axi_awburst), // Not available
-      //.LsuCachelessAxi4Plugin_logic_axi_aw_payload_lock(uncached_dbus_axi_awlock), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_aw_payload_cache(uncached_dbus_axi_awcache),
-      //.LsuCachelessAxi4Plugin_logic_axi_aw_payload_qos(uncached_dbus_axi_awqos), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_aw_payload_prot(),
-      .LsuCachelessAxi4Plugin_logic_axi_w_valid(uncached_dbus_axi_wvalid),
-      .LsuCachelessAxi4Plugin_logic_axi_w_ready(uncached_dbus_axi_wready),
-      .LsuCachelessAxi4Plugin_logic_axi_w_payload_data(uncached_dbus_axi_wdata),
-      .LsuCachelessAxi4Plugin_logic_axi_w_payload_strb(uncached_dbus_axi_wstrb),
-      .LsuCachelessAxi4Plugin_logic_axi_w_payload_last(uncached_dbus_axi_wlast),
-      .LsuCachelessAxi4Plugin_logic_axi_b_valid(uncached_dbus_axi_bvalid),
-      .LsuCachelessAxi4Plugin_logic_axi_b_ready(uncached_dbus_axi_bready),
-      //.LsuCachelessAxi4Plugin_logic_axi_b_payload_id(uncached_dbus_axi_bid), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_b_payload_resp(uncached_dbus_axi_bresp),
-      .LsuCachelessAxi4Plugin_logic_axi_ar_valid(uncached_dbus_axi_arvalid),
-      .LsuCachelessAxi4Plugin_logic_axi_ar_ready(uncached_dbus_axi_arready),
-      .LsuCachelessAxi4Plugin_logic_axi_ar_payload_addr(uncached_dbus_axi_araddr),
-      //.LsuCachelessAxi4Plugin_logic_axi_ar_payload_id(uncached_dbus_axi_arid), // Not available
-      //.LsuCachelessAxi4Plugin_logic_axi_ar_payload_len(uncached_dbus_axi_arlen), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_ar_payload_size(uncached_dbus_axi_arsize),
-      //.LsuCachelessAxi4Plugin_logic_axi_ar_payload_burst(uncached_dbus_axi_arburst), // Not available
-      //.LsuCachelessAxi4Plugin_logic_axi_ar_payload_lock(uncached_dbus_axi_arlock), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_ar_payload_cache(uncached_dbus_axi_arcache),
-      //.LsuCachelessAxi4Plugin_logic_axi_ar_payload_qos(uncached_dbus_axi_arqos), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_ar_payload_prot(),
-      .LsuCachelessAxi4Plugin_logic_axi_r_valid(uncached_dbus_axi_rvalid),
-      .LsuCachelessAxi4Plugin_logic_axi_r_ready(uncached_dbus_axi_rready),
-      .LsuCachelessAxi4Plugin_logic_axi_r_payload_data(uncached_dbus_axi_rdata),
-      //.LsuCachelessAxi4Plugin_logic_axi_r_payload_id(uncached_dbus_axi_rid), // Not available
-      .LsuCachelessAxi4Plugin_logic_axi_r_payload_resp(uncached_dbus_axi_rresp),
-      .LsuCachelessAxi4Plugin_logic_axi_r_payload_last(uncached_dbus_axi_rlast),
-
-      // Interrupts (TODO: connect them in SpinalHDL to internal plic and clint units)
-      .PrivilegedPlugin_logic_rdtime(unused_rdtime),
-      .PrivilegedPlugin_logic_harts_0_int_m_timer(unused_harts_0_int_m_timer),
-      .PrivilegedPlugin_logic_harts_0_int_m_software(unused_harts_0_int_m_software),
-      .PrivilegedPlugin_logic_harts_0_int_m_external(unused_harts_0_int_m_external),
-      .PrivilegedPlugin_logic_harts_0_int_s_external(unused_harts_0_int_s_external),
-
+      .iBusAxi_arvalid(ibus_axi_arvalid_o),
+      .iBusAxi_arready(ibus_axi_arready_i),
+      .iBusAxi_araddr(ibus_axi_araddr_o),
+      .iBusAxi_arlen(ibus_axi_arlen_int),
+      .iBusAxi_arsize(ibus_axi_arsize_o),
+      .iBusAxi_arburst(ibus_axi_arburst_o),
+      .iBusAxi_arcache(ibus_axi_arcache_o),
+      .iBusAxi_arprot(),
+      .iBusAxi_rvalid(ibus_axi_rvalid_i),
+      .iBusAxi_rready(ibus_axi_rready_o),
+      .iBusAxi_rdata(ibus_axi_rdata_i),
+      .iBusAxi_rresp(ibus_axi_rresp_i),
+      .iBusAxi_rlast(ibus_axi_rlast_i),
+      // Cached Data Bus
+      .dBusAxi_awvalid(cached_dbus_axi_awvalid),
+      .dBusAxi_awready(cached_dbus_axi_awready),
+      .dBusAxi_awaddr(cached_dbus_axi_awaddr),
+      .dBusAxi_awlen(cached_dbus_axi_awlen_int),
+      .dBusAxi_awsize(cached_dbus_axi_awsize),
+      .dBusAxi_awburst(cached_dbus_axi_awburst),
+      .dBusAxi_awcache(cached_dbus_axi_awcache),
+      .dBusAxi_awprot(),
+      .dBusAxi_wvalid(cached_dbus_axi_wvalid),
+      .dBusAxi_wready(cached_dbus_axi_wready),
+      .dBusAxi_wdata(cached_dbus_axi_wdata),
+      .dBusAxi_wstrb(cached_dbus_axi_wstrb),
+      .dBusAxi_wlast(cached_dbus_axi_wlast),
+      .dBusAxi_bvalid(cached_dbus_axi_bvalid),
+      .dBusAxi_bready(cached_dbus_axi_bready),
+      .dBusAxi_bresp(cached_dbus_axi_bresp),
+      .dBusAxi_arvalid(cached_dbus_axi_arvalid),
+      .dBusAxi_arready(cached_dbus_axi_arready),
+      .dBusAxi_araddr(cached_dbus_axi_araddr),
+      .dBusAxi_arlen(cached_dbus_axi_arlen_int),
+      .dBusAxi_arsize(cached_dbus_axi_arsize),
+      .dBusAxi_arburst(cached_dbus_axi_arburst),
+      .dBusAxi_arcache(cached_dbus_axi_arcache),
+      .dBusAxi_arprot(),
+      .dBusAxi_rvalid(cached_dbus_axi_rvalid),
+      .dBusAxi_rready(cached_dbus_axi_rready),
+      .dBusAxi_rdata(cached_dbus_axi_rdata),
+      .dBusAxi_rresp(cached_dbus_axi_rresp),
+      .dBusAxi_rlast(cached_dbus_axi_rlast),
+      // Uncached IO Bus
+      .ioBusAxi_awvalid(iobus_axi_awvalid),
+      .ioBusAxi_awready(iobus_axi_awready),
+      .ioBusAxi_awaddr(iobus_axi_awaddr),
+      .ioBusAxi_awsize(iobus_axi_awsize),
+      .ioBusAxi_awcache(iobus_axi_awcache),
+      .ioBusAxi_awprot(),
+      .ioBusAxi_wvalid(iobus_axi_wvalid),
+      .ioBusAxi_wready(iobus_axi_wready),
+      .ioBusAxi_wdata(iobus_axi_wdata),
+      .ioBusAxi_wstrb(iobus_axi_wstrb),
+      .ioBusAxi_wlast(iobus_axi_wlast),
+      .ioBusAxi_bvalid(iobus_axi_bvalid),
+      .ioBusAxi_bready(iobus_axi_bready),
+      .ioBusAxi_bresp(iobus_axi_bresp),
+      .ioBusAxi_arvalid(iobus_axi_arvalid),
+      .ioBusAxi_arready(iobus_axi_arready),
+      .ioBusAxi_araddr(iobus_axi_araddr),
+      .ioBusAxi_arsize(iobus_axi_arsize),
+      .ioBusAxi_arcache(iobus_axi_arcache),
+      .ioBusAxi_arprot(),
+      .ioBusAxi_rvalid(iobus_axi_rvalid),
+      .ioBusAxi_rready(iobus_axi_rready),
+      .ioBusAxi_rdata(iobus_axi_rdata),
+      .ioBusAxi_rresp(iobus_axi_rresp),
+      .ioBusAxi_rlast(iobus_axi_rlast),
       // Clock and Reset
       .clk(clk_i),
       .reset(cpu_reset)
   );
 
+   // Unused signals (cached) dbus
+   assign cached_dbus_axi_awid = 1'b0;
+   assign cached_dbus_axi_awlock = 1'b0;
+   assign cached_dbus_axi_awqos = {4{1'b0}};
+   assign cached_dbus_axi_arid = 1'b0;
+   assign cached_dbus_axi_arlock = 1'b0;
+   assign cached_dbus_axi_arqos = {4{1'b0}};
+   // cached_dbus_axi_bid
+   // cached_dbus_axi_rid
+
+   // Unused signals iobus
+   assign iobus_axi_awid = 1'b0;
+   assign iobus_axi_awlock = 1'b0;
+   assign iobus_axi_awqos = {4{1'b0}};
+   assign iobus_axi_arid = 1'b0;
+   assign iobus_axi_arlock = 1'b0;
+   assign iobus_axi_arqos = {4{1'b0}};
+   assign iobus_axi_awburst = {2{1'b0}};
+   assign iobus_axi_arburst = {2{1'b0}};
+   assign iobus_axi_arlen = {AXI_LEN_W{1'b0}};
+   assign iobus_axi_awlen = {AXI_LEN_W{1'b0}};
+   // iobus_axi_bid
+   // iobus_axi_rid
 
 
+   generate
+      if (AXI_LEN_W < 8) begin : gen_if_less_than_8
+         assign cached_dbus_axi_arlen = cached_dbus_axi_arlen_int[AXI_LEN_W-1:0];
+         assign cached_dbus_axi_awlen = cached_dbus_axi_awlen_int[AXI_LEN_W-1:0];
+      end else begin : gen_if_equal_8
+         assign cached_dbus_axi_arlen = cached_dbus_axi_arlen_int;
+         assign cached_dbus_axi_awlen = cached_dbus_axi_awlen_int;
+      end
+   endgenerate
+"""
+    else:  # NOT USE_CACHE
+        snippet="""
+    wire [7:0] ibus_axi_arlen_int;
+
+
+  // Instantiation of VexiiRiscv core
+  VexiiRiscv #(
+""" + f"""\
+      .IO_REGION_BASE (32'h{params["uncached_start_addr"]:x}),
+      .IO_REGION_SIZE (32'h{params["uncached_size"]:x})
+""" + """\
+  ) CPU (
+      // Interrupt sources
+      .PrivilegedPlugin_logic_harts_0_int_m_timer(mtip_i),
+      .PrivilegedPlugin_logic_harts_0_int_m_software(msip_i),
+      .PrivilegedPlugin_logic_harts_0_int_m_external(meip_i),
+      .PrivilegedPlugin_logic_harts_0_int_s_external(seip_i),
+      // Timbase input
+      .PrivilegedPlugin_logic_rdtime(mtime_i),
+""" + f"""\
+      // CPU reset address
+      .resetVector(32'h{params["reset_addr"]:x}),
+""" + """\
+      // Instruction Bus
+      .iBusAxi_arvalid(ibus_axi_arvalid_o),
+      .iBusAxi_arready(ibus_axi_arready_i),
+      .iBusAxi_araddr(ibus_axi_araddr_o),
+      .iBusAxi_arlen(ibus_axi_arlen_int),
+      .iBusAxi_arsize(ibus_axi_arsize_o),
+      .iBusAxi_arburst(ibus_axi_arburst_o),
+      .iBusAxi_arcache(ibus_axi_arcache_o),
+      .iBusAxi_arprot(),
+      .iBusAxi_rvalid(ibus_axi_rvalid_i),
+      .iBusAxi_rready(ibus_axi_rready_o),
+      .iBusAxi_rdata(ibus_axi_rdata_i),
+      .iBusAxi_rresp(ibus_axi_rresp_i),
+      .iBusAxi_rlast(ibus_axi_rlast_i),
+      // Data Bus
+      .ioBusAxi_awvalid(dbus_axi_awvalid_o),
+      .ioBusAxi_awready(dbus_axi_awready_i),
+      .ioBusAxi_awaddr(dbus_axi_awaddr_o),
+      .ioBusAxi_awid(dbus_axi_awid_o),
+      .ioBusAxi_awsize(dbus_axi_awsize_o),
+      .ioBusAxi_awcache(dbus_axi_awcache_o),
+      .ioBusAxi_awprot(),
+      .ioBusAxi_wvalid(dbus_axi_wvalid_o),
+      .ioBusAxi_wready(dbus_axi_wready_i),
+      .ioBusAxi_wdata(dbus_axi_wdata_o),
+      .ioBusAxi_wstrb(dbus_axi_wstrb_o),
+      .ioBusAxi_wlast(dbus_axi_wlast_o),
+      .ioBusAxi_bvalid(dbus_axi_bvalid_i),
+      .ioBusAxi_bready(dbus_axi_bready_o),
+      .ioBusAxi_bid(dbus_axi_bid_i),
+      .ioBusAxi_bresp(dbus_axi_bresp_i),
+      .ioBusAxi_arvalid(dbus_axi_arvalid_o),
+      .ioBusAxi_arready(dbus_axi_arready_i),
+      .ioBusAxi_araddr(dbus_axi_araddr_o),
+      .ioBusAxi_arid(dbus_axi_arid_o),
+      .ioBusAxi_arsize(dbus_axi_arsize_o),
+      .ioBusAxi_arcache(dbus_axi_arcache_o),
+      .ioBusAxi_arprot(),
+      .ioBusAxi_rvalid(dbus_axi_rvalid_i),
+      .ioBusAxi_rready(dbus_axi_rready_o),
+      .ioBusAxi_rdata(dbus_axi_rdata_i),
+      .ioBusAxi_rid(dbus_axi_rid_i),
+      .ioBusAxi_rresp(dbus_axi_rresp_i),
+      .ioBusAxi_rlast(dbus_axi_rlast_i),
+      // Clock and Reset
+      .clk(clk_i),
+      .reset(cpu_reset)
+  );
+
+   // Unused signals dbus
+   assign dbus_axi_awlock_o = 1'b0;
+   assign dbus_axi_awqos_o = {4{1'b0}};
+   assign dbus_axi_arlock_o = 1'b0;
+   assign dbus_axi_arqos_o = {4{1'b0}};
+   assign dbus_axi_awburst_o = {2{1'b0}};
+   assign dbus_axi_arburst_o = {2{1'b0}};
+   assign dbus_axi_arlen_o = {AXI_LEN_W{1'b0}};
+   assign dbus_axi_awlen_o = {AXI_LEN_W{1'b0}};
+"""
+
+    snippet += """
    assign cpu_reset = rst_i | arst_i;
 
-   // Unused ibus write signals
+   // Unused ibus write path
    assign ibus_axi_awvalid_o = 1'b0;
    assign ibus_axi_awaddr_o = {AXI_ADDR_W{1'b0}};
    assign ibus_axi_awid_o = 1'b0;
@@ -451,77 +449,33 @@ def setup(py_params_dict):
    assign ibus_axi_wlast_o = 1'b0;
    assign ibus_axi_bready_o = 1'b0;
 
-   // Unused AXI signals
+   // Unused signals ibus
    assign ibus_axi_arid_o = 1'b0;
    assign ibus_axi_arlock_o = 1'b0;
-   assign ibus_axi_arqos_o = 4'b0;
-   // ibus_axi_rid_i
+   assign ibus_axi_arqos_o = 1'b0;
+   // ibus_axi_rid
 
-   assign cached_dbus_axi_awid = 1'b0;
-   assign cached_dbus_axi_awlock = 1'b0;
-   assign cached_dbus_axi_awqos = 4'b0;
-   // cached_dbus_axi_bid
-   assign cached_dbus_axi_arid = 1'b0;
-   assign cached_dbus_axi_arlock = 1'b0;
-   assign cached_dbus_axi_arqos = 4'b0;
-   // cached_dbus_axi_rid
-
-   assign uncached_dbus_axi_awid = 1'b0;
-   assign uncached_dbus_axi_awlen = 1'b0;
-   assign uncached_dbus_axi_awburst = 1'b0;
-   assign uncached_dbus_axi_awlock = 1'b0;
-   assign uncached_dbus_axi_awqos = 4'b0;
-   // uncached_dbus_axi_bid
-   assign uncached_dbus_axi_arid = 1'b0;
-   assign uncached_dbus_axi_arlen = 1'b0;
-   assign uncached_dbus_axi_arburst = 1'b0;
-   assign uncached_dbus_axi_arlock = 1'b0;
-   assign uncached_dbus_axi_arqos = 4'b0;
-   // uncached_dbus_axi_rid
-
-   // Temporary unused interrupt signals
-   assign unused_rdtime = 64'b0;
-   assign unused_harts_0_int_m_timer = 1'b0;
-   assign unused_harts_0_int_m_software = 1'b0;
-   assign unused_harts_0_int_m_external = 1'b0;
-   assign unused_harts_0_int_s_external = 1'b0;
-
+   generate
+      if (AXI_LEN_W < 8) begin : gen_if_less_than_8_ibus
+         assign ibus_axi_arlen_o = ibus_axi_arlen_int[AXI_LEN_W-1:0];
+      end else begin : gen_if_equal_8_ibus
+         assign ibus_axi_arlen_o = ibus_axi_arlen_int;
+      end
+   endgenerate
 """
-            }
-        ],
-    }
 
+    attributes_dict["snippets"] = [{"verilog_code": snippet}]
+
+    # Disable linter for `VexiiRiscv.v` source.
     if py_params_dict.get("py2hwsw_target", "") == "setup":
         build_dir = py_params_dict.get("build_dir")
-        assert build_dir, "build_dir is not set"
-        # Disable linter for `VexiiRiscvAxi4LinuxPlicClint.v` source.
         os.makedirs(f"{build_dir}/hardware/lint/verilator", exist_ok=True)
         with open(f"{build_dir}/hardware/lint/verilator_config.vlt", "a") as file:
             file.write(
                 f"""
 // Lines generated by {os.path.basename(__file__)}
-lint_off -file "**/VexiiRiscvAxi4LinuxPlicClint.v"
+lint_off -file "*/VexiiRiscv.v"
 """
             )
 
     return attributes_dict
-
-
-# TODO:
-"""
-        # Copy CPU memory initialization binaries to build directory
-        os.makedirs(f"{build_dir}/hardware/simulation", exist_ok=True)
-        os.makedirs(f"{build_dir}/hardware/fpga", exist_ok=True)
-        mem_bin_dir = f"{os.path.dirname(__file__)}/hardware/init_mems"
-        bin_files = os.listdir(mem_bin_dir)
-        for file in bin_files:
-            # copy binaries to simulation directory
-            shutil.copyfile(
-                f"{mem_bin_dir}/{file}", f"{build_dir}/hardware/simulation/{file}"
-            )
-            # symlink binaries in fpga directory as well
-            os.symlink(
-                f"../simulation/{file}",
-                f"{build_dir}/hardware/fpga/{file}",
-            )
-"""

@@ -185,7 +185,7 @@ def setup(py_params_dict):
     if USE_CACHE:
         attributes_dict["subblocks"] = [
                 {
-                    "core_name": "iob_axi_merge",
+                    "core": "iob_axi_merge",
                     "name": "iob_vexiiriscv_axi_merge",
                     "instance_name": "axi_merge",
                     "instance_description": "Merge",
